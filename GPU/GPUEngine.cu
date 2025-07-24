@@ -488,11 +488,11 @@ bool GPUEngine::Randomize()
 // ----------------------------------------------------------------------------
 
 // Helper function to convert hex char to int
-__host__ int hex_char_to_int(char c) {
+__host__ __device__ int hex_char_to_int(char c) {
 	if (c >= '0' && c <= '9') return c - '0';
 	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
 	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-	return -1;
+	return -1; // Invalid hex character
 }
 
 // Helper function: Host-side 256-bit hex string to uint64_t[4]
@@ -546,14 +546,6 @@ __host__ uint64_t HostBN_AddOneInplace(uint64_t r[4]) {
 		else carry = 0;
 	}
 	return carry;
-}
-
-// Helper function to convert hex character to integer
-__host__ __device__ int hex_char_to_int(char c) {
-	if (c >= '0' && c <= '9') return c - '0';
-	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-	return -1; // Invalid hex character
 }
 
 // Device kernel to initialize cuRAND states
