@@ -548,6 +548,14 @@ __host__ uint64_t HostBN_AddOneInplace(uint64_t r[4]) {
 	return carry;
 }
 
+// Helper function to convert hex character to integer
+__host__ __device__ int hex_char_to_int(char c) {
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1; // Invalid hex character
+}
+
 // Device kernel to initialize cuRAND states
 __global__ void init_curand_states_kernel(curandStatePhilox4_32_10_t *states, unsigned long long seed, int num_states) {
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -675,88 +683,6 @@ __global__ void generate_keys_in_range_kernel(
 	key_ptr[1] = final_key_256bit[1];
 	key_ptr[2] = final_key_256bit[2];
 	key_ptr[3] = final_key_256bit[3];
-}
-
-// ----------------------------------------------------------------------------
-// Host Big Number Functions Implementation
-
-__host__ bool HostBN_HexToU64Array(const std::string& hex, uint64_t arr[4]) {
-    // Initialize array
-    arr[0] = arr[1] = arr[2] = arr[3] = 0;
-    
-    if (hex.length() > 64) return false; // Too long for 256-bit
-    
-    // Process hex string from right to left (LSB first)
-    size_t len = hex.length();
-    for (size_t i = 0; i < len; i++) {
-        char c = hex[len - 1 - i]; // Process from right to left
-        uint64_t digit;
-        
-        if (c >= '0' && c <= '9') {
-            digit = c - '0';
-        } else if (c >= 'a' && c <= 'f') {
-            digit = c - 'a' + 10;
-        } else if (c >= 'A' && c <= 'F') {
-            digit = c - 'A' + 10;
-        } else {
-            return false; // Invalid hex character
-        }
-        
-        // Determine which 64-bit word and bit position
-        size_t word_idx = i / 16;  // 16 hex digits per 64-bit word
-        size_t bit_pos = (i % 16) * 4;  // 4 bits per hex digit
-        
-        if (word_idx < 4) {
-            arr[word_idx] |= digit << bit_pos;
-        }
-    }
-    
-    return true;
-}
-
-__host__ uint64_t HostBN_Sub(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
-    // Subtract b from a, store result in r
-    // Returns 1 if borrow occurred (a < b), 0 otherwise
-    uint64_t borrow = 0;
-    
-    for (int i = 0; i < 4; i++) {
-        uint64_t temp = a[i] - borrow;
-        if (temp > a[i]) { // Underflow occurred
-            borrow = 1;
-            r[i] = temp - b[i];
-            if (r[i] > temp) borrow = 1;
-        } else {
-            if (temp >= b[i]) {
-                r[i] = temp - b[i];
-                borrow = 0;
-            } else {
-                r[i] = (UINT64_MAX - b[i]) + temp + 1;
-                borrow = 1;
-            }
-        }
-    }
-    
-    return borrow;
-}
-
-__host__ uint64_t HostBN_AddOneInplace(uint64_t r[4]) {
-    // Add 1 to the 256-bit number in r
-    // Returns carry out (should be 0 for 256-bit unless overflow)
-    uint64_t carry = 1;
-    
-    for (int i = 0; i < 4; i++) {
-        uint64_t temp = r[i] + carry;
-        if (temp < r[i]) { // Overflow occurred
-            carry = 1;
-            r[i] = temp;
-        } else {
-            r[i] = temp;
-            carry = 0;
-            break;
-        }
-    }
-    
-    return carry;
 }
 
 // ----------------------------------------------------------------------------
