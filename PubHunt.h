@@ -43,6 +43,8 @@ struct ITEM {
 
 #ifdef WIN64
 #include <Windows.h>
+#undef min
+#undef max
 #endif
 #include "IntGroup.h"
 #include "Timer.h"

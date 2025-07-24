@@ -613,10 +613,11 @@ void PubHunt::FindKeyCPU(int threadId) {
 // For example:
 std::string PubHunt::formatThousands(uint64_t n) {
     std::string s = std::to_string(n);
-    int len = (int)s.length();
-    int numCommas = (len - 1) / 3;
+    size_t len = s.length();
+    int numCommas = static_cast<int>(len - 1) / 3;
     for (int i = 0; i < numCommas; ++i) {
-        s.insert(len - 3 * (i + 1), 1, ',');
+        size_t insertPos = len - static_cast<size_t>(3 * (i + 1));
+        s.insert(insertPos, 1, ',');
     }
     return s;
 }
