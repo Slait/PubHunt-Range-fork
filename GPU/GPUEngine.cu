@@ -176,6 +176,8 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
 	const std::string& endKeyHex)   // Added
 {
 	this->dev_rand_states_ = nullptr;
+	this->dev_start_key_ = nullptr;
+	this->dev_range_span_ = nullptr;
 	this->use_range_ = false;
 
 	// Initialise CUDA
@@ -331,8 +333,12 @@ GPUEngine::~GPUEngine()
 	CudaSafeCall(cudaStreamDestroy(stream));
 
 	if (use_range_) {
-		CudaSafeCall(cudaFree(dev_start_key_));
-		CudaSafeCall(cudaFree(dev_range_span_));
+		if (dev_start_key_ != nullptr) {
+			CudaSafeCall(cudaFree(dev_start_key_));
+		}
+		if (dev_range_span_ != nullptr) {
+			CudaSafeCall(cudaFree(dev_range_span_));
+		}
 	}
 	
 	// Free cuRAND states if allocated
