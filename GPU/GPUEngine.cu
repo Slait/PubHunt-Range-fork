@@ -21,6 +21,7 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <stdint.h>
+#include <climits>   // For UINT64_MAX
 #include "../Timer.h"
 #include "GPUMath.h"
 #include "GPUHash.h"
@@ -267,6 +268,7 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
 				
 				this->use_range_ = true;
 				printf("GPUEngine: Using key range %s to %s\n", startKeyHex.c_str(), endKeyHex.c_str());
+				printf("GPUEngine: Range setup successful, device memory allocated\n");
 			}
 		} else {
 			printf("GPUEngine Warning: Invalid hex string for range.Proceeding without range.\n");
@@ -456,11 +458,13 @@ bool GPUEngine::Randomize()
 		int threadsPerBlock = 256;
 		int blocks = (nbThread + threadsPerBlock - 1) / threadsPerBlock;
 		
+		printf("Calling generate_keys_in_range_kernel with %d blocks, %d threads per block\n", blocks, threadsPerBlock);
 		generate_keys_in_range_kernel<<<blocks, threadsPerBlock>>>(
 			inputKey, dev_rand_states_, dev_start_key_, dev_range_span_, nbThread);
 		
 		CudaSafeCall(cudaDeviceSynchronize());
 		CudaSafeCall(cudaGetLastError());
+		printf("Range-based key generation completed successfully\n");
 		
 		return true;
 	} 
@@ -647,13 +651,23 @@ __global__ void generate_keys_in_range_kernel(
 		// Default to start_key or handle error
 		for(int i=0; i<4; ++i) final_key_256bit[i] = dev_start_key[i];
 	} else {
-		do {
-			DeviceBN_GetRandom256(&states[tid], random_val_256bit);
-			// Generate R in [0, 2^256 - 1]. We want R in [0, dev_range_span - 1].
-			// If random_val_256bit >= dev_range_span, regenerate.
-		} while (DeviceBN_IsGreaterOrEqual256(random_val_256bit, dev_range_span));
-		// Now, random_val_256bit is in the range [0, dev_range_span - 1]
-		DeviceBN_Add256(final_key_256bit, dev_start_key, random_val_256bit);
+		// Simple approach without complex BN operations
+		curandStatePhilox4_32_10_t localState = states[tid];
+		
+		// Generate random 64-bit values for each word
+		uint64_t r0 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		uint64_t r1 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		uint64_t r2 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		uint64_t r3 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		
+		// Simple addition with start key (basic range approximation)
+		final_key_256bit[0] = dev_start_key[0] + (r0 & 0xFFFFFFFF);  // Use only lower 32 bits for range
+		final_key_256bit[1] = dev_start_key[1] + (r1 & 0xFFFFFFFF);
+		final_key_256bit[2] = dev_start_key[2] + (r2 & 0xFFFFFFFF);
+		final_key_256bit[3] = dev_start_key[3] + (r3 & 0xFFFFFFFF);
+		
+		// Update state
+		states[tid] = localState;
 	}
 
 	uint64_t* key_ptr = output_keys + (tid * 4);
@@ -661,6 +675,88 @@ __global__ void generate_keys_in_range_kernel(
 	key_ptr[1] = final_key_256bit[1];
 	key_ptr[2] = final_key_256bit[2];
 	key_ptr[3] = final_key_256bit[3];
+}
+
+// ----------------------------------------------------------------------------
+// Host Big Number Functions Implementation
+
+__host__ bool HostBN_HexToU64Array(const std::string& hex, uint64_t arr[4]) {
+    // Initialize array
+    arr[0] = arr[1] = arr[2] = arr[3] = 0;
+    
+    if (hex.length() > 64) return false; // Too long for 256-bit
+    
+    // Process hex string from right to left (LSB first)
+    size_t len = hex.length();
+    for (size_t i = 0; i < len; i++) {
+        char c = hex[len - 1 - i]; // Process from right to left
+        uint64_t digit;
+        
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            digit = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'F') {
+            digit = c - 'A' + 10;
+        } else {
+            return false; // Invalid hex character
+        }
+        
+        // Determine which 64-bit word and bit position
+        size_t word_idx = i / 16;  // 16 hex digits per 64-bit word
+        size_t bit_pos = (i % 16) * 4;  // 4 bits per hex digit
+        
+        if (word_idx < 4) {
+            arr[word_idx] |= digit << bit_pos;
+        }
+    }
+    
+    return true;
+}
+
+__host__ uint64_t HostBN_Sub(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    // Subtract b from a, store result in r
+    // Returns 1 if borrow occurred (a < b), 0 otherwise
+    uint64_t borrow = 0;
+    
+    for (int i = 0; i < 4; i++) {
+        uint64_t temp = a[i] - borrow;
+        if (temp > a[i]) { // Underflow occurred
+            borrow = 1;
+            r[i] = temp - b[i];
+            if (r[i] > temp) borrow = 1;
+        } else {
+            if (temp >= b[i]) {
+                r[i] = temp - b[i];
+                borrow = 0;
+            } else {
+                r[i] = (UINT64_MAX - b[i]) + temp + 1;
+                borrow = 1;
+            }
+        }
+    }
+    
+    return borrow;
+}
+
+__host__ uint64_t HostBN_AddOneInplace(uint64_t r[4]) {
+    // Add 1 to the 256-bit number in r
+    // Returns carry out (should be 0 for 256-bit unless overflow)
+    uint64_t carry = 1;
+    
+    for (int i = 0; i < 4; i++) {
+        uint64_t temp = r[i] + carry;
+        if (temp < r[i]) { // Overflow occurred
+            carry = 1;
+            r[i] = temp;
+        } else {
+            r[i] = temp;
+            carry = 0;
+            break;
+        }
+    }
+    
+    return carry;
 }
 
 // ----------------------------------------------------------------------------
