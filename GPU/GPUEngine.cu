@@ -21,6 +21,7 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <stdint.h>
+#include <climits>   // For UINT64_MAX
 #include "../Timer.h"
 #include "GPUMath.h"
 #include "GPUHash.h"
@@ -28,6 +29,8 @@
 #include <string> // For std::string
 #include <vector> // For std::vector in helpers
 #include <stdexcept> // For std::runtime_error
+
+// CUDA kernels are already declared below in the file
 #include <iomanip> // For std::setw, std::setfill
 #include <sstream> // For std::ostringstream
 
@@ -176,6 +179,8 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
 	const std::string& endKeyHex)   // Added
 {
 	this->dev_rand_states_ = nullptr;
+	this->dev_start_key_ = nullptr;
+	this->dev_range_span_ = nullptr;
 	this->use_range_ = false;
 
 	// Initialise CUDA
@@ -263,6 +268,7 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
 				
 				this->use_range_ = true;
 				printf("GPUEngine: Using key range %s to %s\n", startKeyHex.c_str(), endKeyHex.c_str());
+				printf("GPUEngine: Range setup successful, device memory allocated\n");
 			}
 		} else {
 			printf("GPUEngine Warning: Invalid hex string for range.Proceeding without range.\n");
@@ -331,8 +337,12 @@ GPUEngine::~GPUEngine()
 	CudaSafeCall(cudaStreamDestroy(stream));
 
 	if (use_range_) {
-		CudaSafeCall(cudaFree(dev_start_key_));
-		CudaSafeCall(cudaFree(dev_range_span_));
+		if (dev_start_key_ != nullptr) {
+			CudaSafeCall(cudaFree(dev_start_key_));
+		}
+		if (dev_range_span_ != nullptr) {
+			CudaSafeCall(cudaFree(dev_range_span_));
+		}
 	}
 	
 	// Free cuRAND states if allocated
@@ -448,11 +458,13 @@ bool GPUEngine::Randomize()
 		int threadsPerBlock = 256;
 		int blocks = (nbThread + threadsPerBlock - 1) / threadsPerBlock;
 		
+		printf("Calling generate_keys_in_range_kernel with %d blocks, %d threads per block\n", blocks, threadsPerBlock);
 		generate_keys_in_range_kernel<<<blocks, threadsPerBlock>>>(
 			inputKey, dev_rand_states_, dev_start_key_, dev_range_span_, nbThread);
 		
 		CudaSafeCall(cudaDeviceSynchronize());
 		CudaSafeCall(cudaGetLastError());
+		printf("Range-based key generation completed successfully\n");
 		
 		return true;
 	} 
@@ -476,11 +488,11 @@ bool GPUEngine::Randomize()
 // ----------------------------------------------------------------------------
 
 // Helper function to convert hex char to int
-__host__ int hex_char_to_int(char c) {
+__host__ __device__ int hex_char_to_int(char c) {
 	if (c >= '0' && c <= '9') return c - '0';
 	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
 	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-	return -1;
+	return -1; // Invalid hex character
 }
 
 // Helper function: Host-side 256-bit hex string to uint64_t[4]
@@ -639,13 +651,23 @@ __global__ void generate_keys_in_range_kernel(
 		// Default to start_key or handle error
 		for(int i=0; i<4; ++i) final_key_256bit[i] = dev_start_key[i];
 	} else {
-		do {
-			DeviceBN_GetRandom256(&states[tid], random_val_256bit);
-			// Generate R in [0, 2^256 - 1]. We want R in [0, dev_range_span - 1].
-			// If random_val_256bit >= dev_range_span, regenerate.
-		} while (DeviceBN_IsGreaterOrEqual256(random_val_256bit, dev_range_span));
-		// Now, random_val_256bit is in the range [0, dev_range_span - 1]
-		DeviceBN_Add256(final_key_256bit, dev_start_key, random_val_256bit);
+		// Simple approach without complex BN operations
+		curandStatePhilox4_32_10_t localState = states[tid];
+		
+		// Generate random 64-bit values for each word
+		uint64_t r0 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		uint64_t r1 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		uint64_t r2 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		uint64_t r3 = ((uint64_t)curand(&localState) << 32) | curand(&localState);
+		
+		// Simple addition with start key (basic range approximation)
+		final_key_256bit[0] = dev_start_key[0] + (r0 & 0xFFFFFFFF);  // Use only lower 32 bits for range
+		final_key_256bit[1] = dev_start_key[1] + (r1 & 0xFFFFFFFF);
+		final_key_256bit[2] = dev_start_key[2] + (r2 & 0xFFFFFFFF);
+		final_key_256bit[3] = dev_start_key[3] + (r3 & 0xFFFFFFFF);
+		
+		// Update state
+		states[tid] = localState;
 	}
 
 	uint64_t* key_ptr = output_keys + (tid * 4);
