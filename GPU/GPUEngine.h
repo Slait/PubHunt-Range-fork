@@ -83,8 +83,8 @@ private:
 
 	// Range parameters
 	bool use_range_;
-	uint64_t* dev_start_key_;    // Device pointer for start key
-	uint64_t* dev_range_span_;   // Device pointer for range span
+	uint64_t* dev_start_key_;    // Device memory pointer
+	uint64_t* dev_range_span_;   // Device memory pointer
 
 	// cuRAND states for in-kernel generation if Randomize changes
 	curandStatePhilox4_32_10_t* dev_rand_states_;

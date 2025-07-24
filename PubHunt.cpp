@@ -285,6 +285,10 @@ void PubHunt::search() {
         }
 #endif
 
+        // Add debugging info
+        _logger->Log(LogLevel::DEBUG, "Monitor: currentTotalHashes=%llu, currentSpeed=%.2f, deviceCount=%u", 
+                     currentTotalHashes, currentSpeed, _deviceCount);
+        
         _logger->Log(LogLevel::INFO, "Status: %llu hashes, Speed: %.2f MH/s, Time: %02d:%02d:%02d%s                    ", 
                      _totalHashes, currentSpeed / 1e6, hours, minutes, seconds, progressStr.c_str());
 
@@ -529,6 +533,9 @@ void PubHunt::FindKeyGPU(int engineIndex, const std::string& deviceName) {
     // Enable all debug logs
     _logger->SetMinLevel(LogLevel::DEBUG);
     _logger->Log(LogLevel::DEBUG, "Starting GPU search loop on engine %d", engineIndex);
+    _logger->Log(LogLevel::INFO, "Grid size for engine %d: %dx%d, Expected hashes per step: %llu", 
+                engineIndex, gridSizeX_to_use, gridSizeY_to_use, 
+                static_cast<uint64_t>(gridSizeX_to_use) * static_cast<uint64_t>(gridSizeY_to_use));
 
     std::vector<ITEM> found_items;
     int stepCount = 0;  // Count steps for debug output
@@ -540,16 +547,15 @@ void PubHunt::FindKeyGPU(int engineIndex, const std::string& deviceName) {
         // Clear any previous items
         found_items.clear();
         
+        // Update stats for this engine BEFORE calling Step
+        // Simple hash count estimation based on grid size
+        uint64_t hashesPerStep = static_cast<uint64_t>(gridSizeX_to_use) * static_cast<uint64_t>(gridSizeY_to_use);
+        _deviceTotalHashes[engineIndex] += hashesPerStep;
+        
         bool step_ok = currentEngine->Step(found_items); // Removed batchflag
         
         _logger->Log(LogLevel::DEBUG, "GPUEngine::Step() returned %s", step_ok ? "true" : "false");
         
-        if (!step_ok) {
-            _logger->Log(LogLevel::WARNING, "GPUEngine::Step failed on device %s. Stopping this engine.", currentEngine->deviceName.c_str());
-            isAlive[engineIndex] = false; // Stop this specific engine's loop
-            break;
-        }
-
         if (!_running || _stopped) break; // Global stop signal
 
         _logger->Log(LogLevel::DEBUG, "Step complete, found %d items", (int)found_items.size());
@@ -559,11 +565,12 @@ void PubHunt::FindKeyGPU(int engineIndex, const std::string& deviceName) {
             output(item); // Call the output method
             // Potentially update global found count if needed (e.g., _nbFoundKey++)
         }
-
-        // Update stats for this engine
-        // Simple hash count estimation based on grid size
-        uint64_t hashesPerStep = static_cast<uint64_t>(gridSizeX_to_use) * static_cast<uint64_t>(gridSizeY_to_use);
-        _deviceTotalHashes[engineIndex] += hashesPerStep;
+        
+        if (!step_ok) {
+            _logger->Log(LogLevel::WARNING, "GPUEngine::Step failed on device %s. Will retry...", currentEngine->deviceName.c_str());
+            // Don't break immediately, let it retry a few times
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         
         // Calculate speed based on elapsed time since start
         double currentTime = Timer::get_tick() / 1000.0;
