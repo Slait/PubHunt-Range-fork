@@ -29,11 +29,7 @@
 #include <vector> // For std::vector in helpers
 #include <stdexcept> // For std::runtime_error
 
-// Forward declarations for CUDA kernels
-__global__ void init_curand_states_kernel(curandStatePhilox4_32_10_t* states, unsigned long long seed, int n);
-__global__ void generate_keys_in_range_kernel(uint64_t* output_keys, curandStatePhilox4_32_10_t* states, 
-                                             uint64_t* dev_start_key, uint64_t* dev_range_span, int n);
-__global__ void compute_hash(uint64_t* inputKey, uint32_t* inputHash, int numHash160, uint32_t maxFound, uint32_t* outputBuffer);
+// CUDA kernels are already declared below in the file
 #include <iomanip> // For std::setw, std::setfill
 #include <sstream> // For std::ostringstream
 
@@ -665,73 +661,6 @@ __global__ void generate_keys_in_range_kernel(
 	key_ptr[1] = final_key_256bit[1];
 	key_ptr[2] = final_key_256bit[2];
 	key_ptr[3] = final_key_256bit[3];
-}
-
-// ----------------------------------------------------------------------------
-// CUDA Kernel implementations
-
-__global__ void init_curand_states_kernel(curandStatePhilox4_32_10_t* states, unsigned long long seed, int n) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < n) {
-        curand_init(seed, tid, 0, &states[tid]);
-    }
-}
-
-__global__ void generate_keys_in_range_kernel(uint64_t* output_keys, curandStatePhilox4_32_10_t* states, 
-                                             uint64_t* dev_start_key, uint64_t* dev_range_span, int n) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    
-    curandStatePhilox4_32_10_t localState = states[tid];
-    uint64_t final_key_256bit[4];
-    uint64_t random_val_256bit[4];
-    
-    // Simple range-based key generation
-    if (dev_range_span != nullptr && dev_start_key != nullptr) {
-        // Generate random values for each 64-bit component
-        random_val_256bit[0] = curand(&localState);
-        random_val_256bit[1] = curand(&localState);
-        random_val_256bit[2] = curand(&localState);
-        random_val_256bit[3] = curand(&localState);
-        
-        // Simple modulo approach for demonstration (not cryptographically optimal)
-        // In production, use proper big integer arithmetic
-        for (int i = 0; i < 4; i++) {
-            final_key_256bit[i] = dev_start_key[i] + (random_val_256bit[i] % 
-                                 (dev_range_span[i] > 0 ? dev_range_span[i] : 1));
-        }
-    } else {
-        // Fallback to simple random generation
-        final_key_256bit[0] = curand(&localState);
-        final_key_256bit[1] = curand(&localState);
-        final_key_256bit[2] = curand(&localState);
-        final_key_256bit[3] = curand(&localState);
-    }
-    
-    // Store the generated key
-    uint64_t* key_ptr = output_keys + (tid * 4);
-    key_ptr[0] = final_key_256bit[0];
-    key_ptr[1] = final_key_256bit[1];
-    key_ptr[2] = final_key_256bit[2];
-    key_ptr[3] = final_key_256bit[3];
-    
-    // Update the state
-    states[tid] = localState;
-}
-
-__global__ void compute_hash(uint64_t* inputKey, uint32_t* inputHash, int numHash160, uint32_t maxFound, uint32_t* outputBuffer) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Get the key for this thread
-    uint64_t* keys = inputKey + (tid * 4);
-    
-    // Process all input hashes for this key
-    for (int hashIdx = 0; hashIdx < numHash160; hashIdx++) {
-        uint32_t* hash160 = inputHash + (hashIdx * 5); // Each hash160 is 5 uint32_t values (20 bytes)
-        
-        // Call the compute hash function from GPUCompute.h
-        ComputeHash(keys, hash160, 1, maxFound, outputBuffer);
-    }
 }
 
 // ----------------------------------------------------------------------------
